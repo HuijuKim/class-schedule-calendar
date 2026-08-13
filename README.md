@@ -28,7 +28,7 @@
 ### 2. 만들기
 
 ```
-run_timetable.bat        더블클릭
+run_timetable.bat        빠른 실행
 ```
 
 또는 직접:
@@ -154,7 +154,7 @@ py make_timetable.py --only CHEM303 --uid-suffix v2 --out chem303.ics
 |---|---|
 | `crawl.js` | 브라우저 콘솔에서 실행. 과목과 강의실, 학기 날짜를 긁습니다 |
 | `make_timetable.py` | 본체 |
-| `run_timetable.bat` | 더블클릭용 |
+| `run_timetable.bat` | 빠른실행용 |
 | `timetable.json` | `crawl.js` 결과 |
 | `courses.csv` | 중간 파일 + 색/강의실/제외를 손보는 곳 |
 | `timetable_YYYY_학기.ics` | 결과물 |
