@@ -1,0 +1,11 @@
+# 개인 자료 — 커밋하지 않는다
+timetable.json
+courses.csv
+*.ics
+full_html.txt
+syllabus.txt
+rooms.txt
+*.jpg
+*.png
+
+__pycache__/
