@@ -3,7 +3,8 @@
  *  1. 수강신청 페이지(/ucr/ucreTlsnAplymMngt/index.do)를 로그인한 상태로 연다
  *  2. F12 → Console 에 이 파일 내용을 통째로 붙여넣고 실행
  *  3. 출력된 JSON 을 project_timetable\timetable.json 으로 저장
- *     (자동 복사가 안 되면 콘솔에 copy(timetable) 입력)
+ *     (자동 복사가 안 되면 콘솔에 copy(timetable) 입력
+ *      /콘솔 출력을 드래그로 복사)
  *  4. py make_timetable.py
  *
  * 긁는 것: 신청내역 그리드(과목코드·분반·과목명·강의시간·학점·교수·이수구분·학부),
