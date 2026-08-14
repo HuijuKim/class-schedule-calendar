@@ -10,6 +10,9 @@
 다시 실행하면 된다. 과목코드+분반으로 찾아 유지한다. 특정 과목을 빼고 싶으면
 '제외' 칸에 Y 를 적으면 되지만, 한두 개면 캘린더에서 지우는 편이 빠르다.
 
+공휴일(대체공휴일 포함)은 공개 캘린더에서 받아 그날 수업만 EXDATE 로 뺀다.
+처음 한 번만 받고 holidays.ics 로 캐시하므로 다음부터는 네트워크가 없어도 된다.
+
 timetable.json 이 없으면 수강신청 페이지 소스를 저장한 HTML 에서 직접 읽는다.
 표가 여러 개라도 '취소' 버튼이 있는 표(= 내 신청내역)를 골라낸다.
 """
@@ -20,6 +23,7 @@ import json
 import os
 import re
 import sys
+import urllib.request
 from datetime import date, datetime, time, timedelta, timezone
 from html.parser import HTMLParser
 
@@ -49,6 +53,12 @@ JUNK_RE = re.compile(r"^(\d+|[A-Z]{2,}[\d.]*)$")
 DATE_CELL_RE = re.compile(r"^(20\d{2})/(\d{2})/(\d{2})$")   # 개강일 칸 2026/08/24
 # "수강변경기간 : 2026/08/24 (09:00) ~ 2026/09/04 (23:59)" — 이 첫날이 개강일이다
 CHANGE_PERIOD_RE = re.compile(r"수강\s*변경\s*기간[^0-9]{0,30}(20\d{2})/(\d{2})/(\d{2})")
+
+# 대한민국 공휴일. 인증 없이 받을 수 있고 대체공휴일도 들어 있다.
+# DESCRIPTION 이 '공휴일'인 것만 쓴다. '기념일'(국군의날 등)은 휴강이 아니다
+HOLIDAY_URL = ("https://calendar.google.com/calendar/ical/"
+               "ko.south_korea%23holiday%40group.v.calendar.google.com/public/basic.ics")
+HOLIDAY_CACHE = "holidays.ics"
 
 # 신청내역 표에만 있는 버튼. 검색결과 표(detailView)와 구별하는 표시다
 ENROLLED_MARK = "deleteapply"
@@ -329,6 +339,51 @@ def parse_schedule(text):
     return slots
 
 
+def load_holidays(here, args):
+    """{날짜: 이름}. 처음 한 번만 받아 두고 다음부터는 캐시를 쓴다."""
+    if args.no_holidays:
+        return {}
+
+    cache = os.path.join(here, HOLIDAY_CACHE)
+    if not os.path.exists(cache):
+        try:
+            with urllib.request.urlopen(HOLIDAY_URL, timeout=20) as res:
+                data = res.read().decode("utf-8", "replace")
+            with open(cache, "w", encoding="utf-8", newline="") as f:
+                f.write(data)
+            print(f"공휴일 목록을 받아 {HOLIDAY_CACHE} 에 저장했습니다.")
+        except OSError as e:
+            print(f"공휴일 목록을 못 받았습니다({e}). 공휴일 제외 없이 진행합니다.",
+                  file=sys.stderr)
+            return manual_holidays(args)
+
+    with open(cache, encoding="utf-8", errors="replace") as f:
+        raw = f.read().replace("\r\n ", "")      # 접힌 줄 펴기
+
+    holidays = {}
+    for ev in re.findall(r"BEGIN:VEVENT(.*?)END:VEVENT", raw, re.S):
+        day = re.search(r"DTSTART;VALUE=DATE:(\d{4})(\d{2})(\d{2})", ev)
+        name = re.search(r"SUMMARY:(.+)", ev)
+        kind = re.search(r"DESCRIPTION:(.+)", ev)
+        if day and name and kind and kind[1].strip() == "공휴일":
+            holidays[date(int(day[1]), int(day[2]), int(day[3]))] = name[1].strip()
+
+    holidays.update(manual_holidays(args))
+    return holidays
+
+
+def manual_holidays(args):
+    """--holiday 로 직접 준 날. 개교기념일처럼 공휴일이 아닌 휴강일에 쓴다."""
+    days = {}
+    for raw in args.holiday.split(","):
+        if raw.strip():
+            try:
+                days[date.fromisoformat(raw.strip())] = "휴강"
+            except ValueError:
+                sys.exit(f"--holiday 날짜 형식이 틀림: {raw.strip()} (예: 2026-10-15)")
+    return days
+
+
 def code_set(text):
     """'chem303, be204' → {'CHEM303', 'BE204'}"""
     return {c.strip().upper() for c in text.split(",") if c.strip()}
@@ -432,10 +487,15 @@ def event_lines(course, sem, dtstamp):
                                      sem["uid_suffix"]]))
         first = meeting_date(sem, 1, offsets[0])
 
-        # 건너뛰는 주 중 반복 범위 안에 있는 것만 EXDATE 로 뺀다
-        excluded = [stamp(meeting_date(sem, w, off), begin)
-                    for w in sem["skip"] if w < sem["last_week"]
-                    for off in offsets]
+        # 시험 주와 공휴일을 EXDATE 로 뺀다. 반복 범위 안의 날만 넣는다
+        excluded, skipped_days = [], []
+        for w in range(1, sem["last_week"] + 1):
+            for off in offsets:
+                day = meeting_date(sem, w, off)
+                why = "시험" if w in sem["skip"] else sem["holidays"].get(day)
+                if why:
+                    excluded.append(stamp(day, begin))
+                    skipped_days.append((day, why))
 
         lines += [
             "BEGIN:VEVENT",
@@ -464,6 +524,9 @@ def event_lines(course, sem, dtstamp):
             "END:VALARM",
             "END:VEVENT",
         ]
+        holiday_days = [(d, why) for d, why in skipped_days if why != "시험"]
+        if holiday_days:
+            course.setdefault("휴강", []).extend(holiday_days)
     return lines
 
 
@@ -523,7 +586,7 @@ def guess_term(day):
             12: "겨울", 1: "겨울"}[day.month]
 
 
-def resolve_semester(args, span):
+def resolve_semester(args, span, holidays):
     """년도·학기·시작일을 정한다. 인자로 준 건 묻지 않는다."""
     detected_start, detected_end = span
 
@@ -573,6 +636,7 @@ def resolve_semester(args, span):
         "calname": f"{year}학년도 {term}학기 시간표",
         "slug": f"{year}{season}",
         "uid_suffix": args.uid_suffix.strip().lower(),
+        "holidays": holidays,
         "outname": f"timetable_{year}_{season}.ics",
     }
 
@@ -615,6 +679,9 @@ def parse_args(argv):
     p.add_argument("--term", help="학기 1/2/여름/겨울 (없으면 물어봄)")
     p.add_argument("--start", help="수업 시작일 YYYY-MM-DD (없으면 물어봄)")
     p.add_argument("--weeks", type=int, help="전체 주차 수 (기본: 종강일에서 계산, 없으면 16)")
+    p.add_argument("--no-holidays", action="store_true", help="공휴일 제외를 하지 않는다")
+    p.add_argument("--holiday", default="",
+                   help="공휴일 외에 더 뺄 날, 쉼표 구분 (예: 2026-10-15). 개교기념일 등")
     p.add_argument("--skip", default="8,16", help="수업 없는 주차, 쉼표 구분 (기본: 8,16)")
     # 아래는 안 써도 되는 확장용. 기본은 신청한 과목 전부를 넣는다
     p.add_argument("--only", default="", help="이 과목코드만 넣는다, 쉼표 구분")
@@ -670,7 +737,7 @@ def main(argv=None):
         sys.exit("긁어온 자료도 CSV 도 없습니다.\n"
                  "수강신청 페이지 콘솔에서 crawl.js 를 실행해 timetable.json 을 만드세요.")
 
-    sem = resolve_semester(args, span)
+    sem = resolve_semester(args, span, load_holidays(here, args))
     courses, dropped = prepare(rows, code_set(args.exclude),
                                include_all=args.all, only=code_set(args.only))
     out = args.out or os.path.join(here, sem["outname"])
@@ -687,6 +754,11 @@ def main(argv=None):
     for c in courses:
         slots = " ".join(f"{WEEKDAY_KO[o]}{b}-{e}" for o, b, e in c["slots"])
         print(f"  {c['과목코드']:<9} {c['과목명'][:36]}  {slots}  {c['장소'] or '강의실 미입력'}")
+    off = sorted({(d, why) for c in courses for d, why in c.get("휴강", [])})
+    if off:
+        print(f"공휴일 휴강 {len({d for d, _ in off})}일: "
+              + ", ".join(f"{d:%m/%d}({WEEKDAY_KO[d.weekday()]}) {why}"
+                          for d, why in dict.fromkeys(off)))
     if any(not c["장소"] for c in courses):
         print(f"\n강의실이 빈 과목이 있습니다. {os.path.basename(csv_path)} 의 '장소' 칸에 "
               f"적으면 다음 실행부터 유지됩니다.")
